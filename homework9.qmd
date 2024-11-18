@@ -229,6 +229,7 @@ Cool, now we have the workflows for each of our models ready to! Let's set up th
 
 ```{r}
 bike_cv10 = vfold_cv(clean_data, 10) # same CV for all models
+set.seed(42)
 
 bike_cv_fits1 = bike_wfl1 |>
   fit_resamples(bike_cv10)
@@ -263,3 +264,195 @@ final_coef
 ```
 
 And there we have it! We can see how the various different parameters are expected to impact bike rentals in this specific town, and could use these to predict how well our bikes may fair depending on the weather, season, and other variables.
+
+------------------------------------------------------------------------
+
+# Homework 9 New Material
+
+------------------------------------------------------------------------
+
+For this portion of HW9, we will fit 4 new models: a tuned LASSO, a tuned Regression Tree, a tuned Bagged Tree, and a tuned Random Forest. We'll do them in this order, then compare the best tuned version of each to the MLR model from HW8. We'll report model fittings, and then train our best model on the full data set!
+
+## Tuned LASSO Model
+
+Recall that our data is already split as follows, which we will use for these new models too:
+
+> splits = initial_split(clean_data, prop = 0.75, strata = "Season")
+>
+> train = training(splits)
+>
+> test = testing(splits)
+>
+> bike_cv10 = vfold_cv(clean_data, 10)
+
+```{r}
+# let's throw all of our numeric predictors into the LASSO, so that it can effectively help us 'pick' which ones are worth including!
+set.seed(42)
+LASSO_rec = bike_rec1 # we can use the same basic recipe as with our MLR from last time - this entails all predictors in the cleaned data set
+
+# tune the penalty term, and specify LASSO instead of elastic net
+LASSO_spec = linear_reg(penalty=tune(), mixture = 1) |>
+  set_engine("glmnet")
+
+LASSO_wkf = workflow() |>
+  add_recipe(LASSO_rec)|>
+  add_model(LASSO_spec)
+
+LASSO_grid = LASSO_wkf |>
+  tune_grid(resamples = bike_cv10,
+            grid = grid_regular(penalty(), levels = 200))
+
+lowest_rmse = LASSO_grid |>
+  select_best(metric = 'rmse')
+
+LASSO_final = LASSO_wkf |>
+  finalize_workflow(lowest_rmse) |>
+  fit(train) # we will use tidy(LASSO_final) late to produce the coefficients table
+
+LASSO_wkf |>
+  finalize_workflow(lowest_rmse) |>
+  last_fit(splits, metrics = metric_set(rmse,mae)) |>
+  collect_metrics()
+
+# produce the coefs as requested
+tidy(LASSO_final) 
+
+# also produce the coefs for MLR model 1
+final_coef
+```
+
+We see that the values of errors values are around RMSE = 3837 and MAE = 3117. This LASSO example is a great example of the power of this model workflow - we were able to easily recycle the recipe from our earlier project and effectively construct another type of model with ease! Our coefficient tables let us see how the MLR and LASSO models differ - it's interesting to note that temperature has been reduced to 0 in the LASSO model, yet temperature is one of the most important variables in our Bagged model!
+
+## Tuned Regression Tree Model
+
+Again, we can recycle the recipe from our earlier model for the sake of our regression tree:
+
+```{r}
+set.seed(42)
+RegTree_rec = bike_rec1
+
+RegTree_mod = decision_tree(tree_depth = tune(), min_n = 20, cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+RegTree_wkf = workflow() |>
+  add_recipe(RegTree_rec) |>
+  add_model(RegTree_mod)
+
+#RegTree_wkf |> tune_grid(resamples = #bike_cv10) |>
+#  collect_metrics()
+
+RegTree_grid = grid_regular(cost_complexity(), tree_depth(), levels = c(10,5))
+
+RegTree_fits = RegTree_wkf |>
+  tune_grid(resamples = bike_cv10, grid = RegTree_grid)
+
+
+RegTree_best_params = select_best(RegTree_fits, metric = "rmse")
+
+RegTree_final_wkf = RegTree_wkf |>
+  finalize_workflow(RegTree_best_params)
+
+RegTree_final_fit = RegTree_final_wkf |>
+  last_fit(splits,metrics = metric_set(rmse,mae))
+
+RegTree_final_fit |> 
+  collect_metrics()
+
+# plot the final fit
+RegTree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot::rpart.plot(roundint = FALSE)
+```
+
+We see that the MAE for this model is lower than for the LASSO, but our RMSE is higher. The diagram is hard to read because the font is so small, but is shows how we are making our decisions as we move down the branches!
+
+## Tuned Bagged Tree model
+
+Next up, let's run the bagged tree model:
+
+```{r}
+library(baguette)
+set.seed(42)
+Bag_rec = bike_rec1 # recycle the same recipe
+
+Bag_spec = bag_tree(tree_depth = tune(), min_n = 10, cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+Bag_wkf = workflow() |>
+  add_recipe(Bag_rec) |>
+  add_model(Bag_spec)
+
+Bag_grid = grid_regular(cost_complexity(), tree_depth(), levels = c(10,5))
+  
+Bag_fit = Bag_wkf |>
+  tune_grid(resamples = bike_cv10, grid = Bag_grid)
+  
+Bag_best_params = select_best(Bag_fit, metric = 'rmse')
+  
+Bag_final_wkf = Bag_wkf |>
+  finalize_workflow(Bag_best_params)
+
+Bag_final_fit = Bag_final_wkf |>
+  last_fit(splits, metrics = metric_set(rmse,mae))
+
+Bag_final_fit |> 
+  collect_metrics()
+
+# variable importance chart for the bagged model:
+Bag_final_model = extract_fit_engine(Bag_final_fit)
+Bag_final_model$imp |>
+  mutate(term = factor(term, levels = term)) |>
+  ggplot(aes(x = term, y = value)) +
+  geom_bar(stat ="identity") +
+  coord_flip()
+```
+
+In this case, we again see that our MAE is lower than our RMSE! Furthermore, the Test RMSE for our bagged model is better than either of the previous models. Right now, RMSE = 3434 is the number to beat for our next model. Also, we can see that it looks like the temperature and dew point are both the most important variables for this model! This is interesting to see, since our LASSO model pushed temperature to zero.
+
+## Tuned Random Forest
+
+Finally, let's run our tuned Random Forest. This is similar to the Bagged model, but a bit different:
+
+```{r}
+library(ranger)
+set.seed(42)
+RF_rec = bike_rec1 # recycle the same recipe
+
+RF_spec = rand_forest(mtry = tune()) |>
+  set_engine("ranger") |>
+  set_mode("regression")
+
+RF_wkf = workflow() |>
+  add_recipe(RF_rec) |>
+  add_model(RF_spec)
+
+# grid is simple enough that we don't need to specify it in advance
+RF_fit = RF_wkf |> 
+  tune_grid(resamples = bike_cv10, grid = 7)
+  
+RF_best_params = select_best(RF_fit, metric = 'rmse')
+  
+RF_final_wkf = RF_wkf |>
+  finalize_workflow(RF_best_params)
+
+RF_final_fit = RF_final_wkf |>
+  last_fit(splits, metrics = metric_set(rmse,mae))
+
+RF_final_fit |> 
+  collect_metrics()
+
+# variable importance chart for the RF Model:
+RF_final_model =  RF_final_fit$.workflow[[1]]$fit
+var_importance <- RF_final_model$variable.importance
+
+  extract_fit_engine(RF_final_fit)
+RF_final_model$imp |>
+  mutate(term = factor(term, levels = term)) |>
+  ggplot(aes(x = term, y = value)) +
+  geom_bar(stat ="identity") +
+  coord_flip()''
+```
+
+We have a winner! The Test RMSE for our random forest is 3343, the lowest that we have yet seen including the MLR models from HW8! The variable importance plots indicates that –
