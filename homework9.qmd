@@ -421,7 +421,7 @@ set.seed(42)
 RF_rec = bike_rec1 # recycle the same recipe
 
 RF_spec = rand_forest(mtry = tune()) |>
-  set_engine("ranger") |>
+  set_engine("ranger", importance = "permutation") |>
   set_mode("regression")
 
 RF_wkf = workflow() |>
@@ -443,16 +443,16 @@ RF_final_fit = RF_final_wkf |>
 RF_final_fit |> 
   collect_metrics()
 
-# variable importance chart for the RF Model:
-RF_final_model =  RF_final_fit$.workflow[[1]]$fit
-var_importance <- RF_final_model$variable.importance
+# need to extract to get our var importances differently for a ranger-engine model
+RF_extracted_model = RF_final_fit |> 
+  extract_fit_parsnip() 
 
-  extract_fit_engine(RF_final_fit)
-RF_final_model$imp |>
-  mutate(term = factor(term, levels = term)) |>
-  ggplot(aes(x = term, y = value)) +
-  geom_bar(stat ="identity") +
-  coord_flip()''
+RF_imp_values = enframe(RF_extracted_model$fit$variable.importance, name = "Variable", value = "Importance") |>
+  arrange(Importance)
+
+ggplot(RF_imp_values, aes(x = reorder(Variable, -Importance), y = Importance)) +
+  geom_bar(stat = "identity") +
+  coord_flip()
 ```
 
-We have a winner! The Test RMSE for our random forest is 3343, the lowest that we have yet seen including the MLR models from HW8! The variable importance plots indicates that –
+We have a winner! The Test RMSE for our random forest is 3343, the lowest that we have yet seen including the MLR models from HW8! The variable importance plots indicates that temperature is by far the most important of the variables, while holiday doesn't seem to have much importance in the model.
